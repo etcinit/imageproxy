@@ -16,16 +16,17 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
+	"github.com/codegangsta/cli"
+	"github.com/etcinit/imageproxy"
 	"github.com/gregjones/httpcache"
 	"github.com/gregjones/httpcache/diskcache"
 	"github.com/peterbourgon/diskv"
-	"willnorris.com/go/imageproxy"
 )
 
 // goxc values
@@ -37,44 +38,89 @@ var (
 	BUILD_DATE string
 )
 
-var addr = flag.String("addr", "localhost:8080", "TCP address to listen on")
-var whitelist = flag.String("whitelist", "", "comma separated list of allowed remote hosts")
-var cacheDir = flag.String("cacheDir", "", "directory to use for file cache")
-var cacheSize = flag.Uint64("cacheSize", 100, "maximum size of file cache (in MB)")
-var version = flag.Bool("version", false, "print version information")
-
 func main() {
-	flag.Parse()
+	// Setup the command line application.
+	app := cli.NewApp()
+	app.Name = "imageproxy"
+	app.Usage = "imageproxy is a caching image proxy server"
 
-	if *version {
-		fmt.Printf("%v\nBuild: %v\n", VERSION, BUILD_DATE)
-		return
+	// Set version and authorship info.
+	app.Version = VERSION
+	app.Authors = []cli.Author{
+		cli.Author{
+			Name:  "Will Norris",
+			Email: "will@willnorris.com",
+		},
+		cli.Author{
+			Name:  "Eduardo Trujillo",
+			Email: "ed@chromabits.com",
+		},
 	}
 
-	var c httpcache.Cache
-	if *cacheDir != "" {
-		d := diskv.New(diskv.Options{
-			BasePath:     *cacheDir,
-			CacheSizeMax: *cacheSize * 1024 * 1024,
-		})
-		c = diskcache.NewWithDiskv(d)
-	} else {
-		c = httpcache.NewMemoryCache()
+	// Define application flags.
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:  "addr",
+			Value: ":8080",
+			Usage: "TCP address to listen on",
+		},
+		cli.StringFlag{
+			Name:  "whitelist",
+			Value: "",
+			Usage: "comma separated list of allowed remote hosts",
+		},
+		cli.StringFlag{
+			Name:  "cacheDir",
+			Value: "",
+			Usage: "directory to use for the file cache",
+		},
+		cli.IntFlag{
+			Name:  "cacheSize",
+			Value: 100,
+			Usage: "maximum size of the file cache (in MB)",
+		},
 	}
 
-	p := imageproxy.NewProxy(nil, c)
-	if *whitelist != "" {
-		p.Whitelist = strings.Split(*whitelist, ",")
+	// Setup the default action. This action will be triggered when no
+	// subcommand is provided as an argument.
+	app.Action = func(c *cli.Context) {
+		// Collect flags.
+		cacheDir := c.String("cacheDir")
+		cacheSize := c.Int("cacheSize")
+		whitelist := c.String("whitelist")
+		addr := c.String("addr")
+
+		var cache httpcache.Cache
+		if cacheDir != "" {
+			d := diskv.New(diskv.Options{
+				BasePath:     cacheDir,
+				CacheSizeMax: uint64(cacheSize) * 1024 * 1024,
+			})
+
+			cache = diskcache.NewWithDiskv(d)
+		} else {
+			cache = httpcache.NewMemoryCache()
+		}
+
+		p := imageproxy.NewProxy(nil, cache)
+		if whitelist != "" {
+			p.Whitelist = strings.Split(whitelist, ",")
+		}
+
+		// Create the server.
+		server := &http.Server{
+			Addr:    addr,
+			Handler: p,
+		}
+
+		// Begin listening.
+		fmt.Printf("imageproxy (version %v) listening on %s\n", VERSION, server.Addr)
+
+		if err := server.ListenAndServe(); err != nil {
+			log.Fatal("ListenAndServe: ", err)
+		}
 	}
 
-	server := &http.Server{
-		Addr:    *addr,
-		Handler: p,
-	}
-
-	fmt.Printf("imageproxy (version %v) listening on %s\n", VERSION, server.Addr)
-	err := server.ListenAndServe()
-	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
-	}
+	// Begin
+	app.Run(os.Args)
 }
